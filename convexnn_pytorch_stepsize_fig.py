@@ -1,3 +1,6 @@
+# ++++++++++++++++++++++++++++++ Added by Zhengxin +++++++++++++++++++++++++++++++
+import sys
+# ------------------------------ Added by Zhengxin -------------------------------
 import numpy as np
 import dill
 import pickle
@@ -23,6 +26,10 @@ import random
 def parse_args():
     # Parse arguments
     parser = argparse.ArgumentParser()
+    # ++++++++++++++++++++++++++++++ Added by Zhengxin +++++++++++++++++++++++++++++++
+    parser.add_argument('--K', nargs=3, type=int, required=True) # Kernel Shape e.g. [3, 12, 12]
+    parser.add_argument('--S', nargs=3, type=int, required=True) # Stride Shape e.g. [3, 4, 4]
+    # ------------------------------ Added by Zhengxin -------------------------------
     parser.add_argument('--GD', nargs=1, type=int, required=True)
     parser.add_argument('--CVX', nargs=1, type=int, required=True)
     parser.add_argument('--n_epochs', nargs=2, type=int, required=True)
@@ -279,23 +286,50 @@ class custom_cvx_layer(torch.nn.Module):
         self.w = torch.nn.Parameter(data=torch.zeros(num_neurons, d, num_classes), requires_grad=True)
 
     def forward(self, x, sign_patterns):
-        sign_patterns = sign_patterns.unsqueeze(2)
-        x = x.view(x.shape[0], -1) # n x d
+        # ++++++++++++++++++++++++++++++ Added by Zhengxin +++++++++++++++++++++++++++++++
+        # x: [N, number_patches, d]
+        # sign_patterns: [N, number_patches, num_neurons] { num_neurons = P }
+        # ------------------------------ Added by Zhengxin -------------------------------
+
+        # ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+        #sign_patterns = sign_patterns.unsqueeze(2)
+        #x = x.view(x.shape[0], -1) # n x d
         
-        Xv_w = torch.matmul(x, self.v - self.w) # P x N x C
+        #Xv_w = torch.matmul(x, self.v - self.w) # P x N x C
         
-        # for some reason, the permutation is necessary. not sure why
-        DXv_w = torch.mul(sign_patterns, Xv_w.permute(1, 0, 2)) #  N x P x C
+        ## for some reason, the permutation is necessary. not sure why
+        #DXv_w = torch.mul(sign_patterns, Xv_w.permute(1, 0, 2)) #  N x P x C
+        DXv_w = 0
+        for i in range(x.shape[1]):
+            patch_sign_patterns = sign_patterns[:, i, :].unsqueeze(2) # [N, P, 1]
+            patch_x = x[:, i, :] #[N x d]
+            patch_Xv_w = torch.matmul(patch_x, self.v - self.w) # [P, N, C]
+            patch_DXv_w = torch.mul(patch_sign_patterns, patch_Xv_w.permute(1, 0, 2)) #  N x P x C
+            DXv_w += patch_DXv_w
+        # ------------------------------ Changed by Zhengxin -------------------------------
         y_pred = torch.sum(DXv_w, dim=1, keepdim=False) # N x C
-        
         return y_pred
     
 def get_nonconvex_cost(y, model, _x, beta, device):
-    _x = _x.view(_x.shape[0], -1)
-    Xv = torch.matmul(_x, model.v)
-    Xw = torch.matmul(_x, model.w)
-    Xv_relu = torch.max(Xv, torch.Tensor([0]).to(device))
-    Xw_relu = torch.max(Xw, torch.Tensor([0]).to(device))
+    # ++++++++++++++++++++++++++++++ Added by Zhengxin +++++++++++++++++++++++++++++++
+    # x: [N, number_patches, d]
+    # ------------------------------ Added by Zhengxin -------------------------------
+    # ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+    #_x = _x.view(_x.shape[0], -1)
+    #Xv = torch.matmul(_x, model.v)
+    #Xw = torch.matmul(_x, model.w)
+    #Xv_relu = torch.max(Xv, torch.Tensor([0]).to(device))
+    #Xw_relu = torch.max(Xw, torch.Tensor([0]).to(device))
+    Xv_relu = 0
+    Xw_relu = 0
+    for i in range(_x.shape[1]):
+        patch_Xv = torch.matmul(_x[:, i, :], model.v)
+        patch_Xw = torch.matmul(_x[:, i, :], model.w)
+        patch_Xv_relu = torch.max(patch_Xv, torch.Tensor([0]).to(device))
+        patch_Xw_relu = torch.max(patch_Xw, torch.Tensor([0]).to(device))
+        Xv_relu += patch_Xv_relu
+        Xw_relu += patch_Xw_relu
+    # ------------------------------ Changed by Zhengxin -------------------------------
     
     prediction_w_relu = torch.sum(Xv_relu - Xw_relu, dim=0, keepdim=False)
     prediction_cost = 0.5 * torch.norm(prediction_w_relu - y)**2
@@ -304,7 +338,14 @@ def get_nonconvex_cost(y, model, _x, beta, device):
     
     return prediction_cost + regularization_cost
 def loss_func_cvxproblem(yhat, y, model, _x, sign_patterns, beta, rho, device):
-    _x = _x.view(_x.shape[0], -1)
+    # ++++++++++++++++++++++++++++++ Added by Zhengxin +++++++++++++++++++++++++++++++
+    # x: [N, number_patches, d]
+    # sign_patterns: [N, number_patches, num_neurons] { num_neurons = P }
+    # ------------------------------ Added by Zhengxin -------------------------------
+
+    # ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+    #_x = _x.view(_x.shape[0], -1)
+    # ------------------------------ Changed by Zhengxin -------------------------------
     
     # term 1
     loss = 0.5 * torch.norm(yhat - y)**2
@@ -312,22 +353,39 @@ def loss_func_cvxproblem(yhat, y, model, _x, sign_patterns, beta, rho, device):
     loss = loss + beta * torch.sum(torch.norm(model.v, dim=1))
     loss = loss + beta * torch.sum(torch.norm(model.w, dim=1))
     
+    # ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
     # term 3
-    sign_patterns = sign_patterns.unsqueeze(2) # N x P x 1
+    #sign_patterns = sign_patterns.unsqueeze(2) # N x P x 1
     
-    Xv = torch.matmul(_x, torch.sum(model.v, dim=2, keepdim=True)) # N x d times P x d x 1 -> P x N x 1
-    DXv = torch.mul(sign_patterns, Xv.permute(1, 0, 2)) # P x N x 1
-    relu_term_v = torch.max(-2*DXv + Xv.permute(1, 0, 2), torch.Tensor([0]).to(device))
-    loss = loss + rho * torch.sum(relu_term_v)
+    #Xv = torch.matmul(_x, torch.sum(model.v, dim=2, keepdim=True)) # N x d times P x d x 1 -> P x N x 1
+    #DXv = torch.mul(sign_patterns, Xv.permute(1, 0, 2)) # P x N x 1
+    #relu_term_v = torch.max(-2*DXv + Xv.permute(1, 0, 2), torch.Tensor([0]).to(device))
+    #loss = loss + rho * torch.sum(relu_term_v)
     
-    Xw = torch.matmul(_x, torch.sum(model.w, dim=2, keepdim=True))
-    DXw = torch.mul(sign_patterns, Xw.permute(1, 0, 2))
-    relu_term_w = torch.max(-2*DXw + Xw.permute(1, 0, 2), torch.Tensor([0]).to(device))
-    loss = loss + rho * torch.sum(relu_term_w)
+    #Xw = torch.matmul(_x, torch.sum(model.w, dim=2, keepdim=True))
+    #DXw = torch.mul(sign_patterns, Xw.permute(1, 0, 2))
+    #relu_term_w = torch.max(-2*DXw + Xw.permute(1, 0, 2), torch.Tensor([0]).to(device))
+    #loss = loss + rho * torch.sum(relu_term_w)
+    for i in range(_x.shape[1]):
+        patch_sign_patterns = sign_patterns[:, i, :].unsqueeze(2) # N x P x 1
+
+        patch_Xv = torch.matmul(_x[:, i, :], torch.sum(model.v, dim=2, keepdim=True)) # N x d times P x d x 1 -> P x N x 1
+        patch_DXv = torch.mul(patch_sign_patterns, patch_Xv.permute(1, 0, 2)) # P x N x 1
+        patch_relu_term_v = torch.max(-2*patch_DXv + patch_Xv.permute(1, 0, 2), torch.Tensor([0]).to(device))
+        loss = loss + rho * torch.sum(patch_relu_term_v)
+        
+        patch_Xw = torch.matmul(_x[:, i, :], torch.sum(model.w, dim=2, keepdim=True))
+        patch_DXw = torch.mul(patch_sign_patterns, patch_Xw.permute(1, 0, 2))
+        patch_relu_term_w = torch.max(-2*patch_DXw + patch_Xw.permute(1, 0, 2), torch.Tensor([0]).to(device))
+        loss = loss + rho * torch.sum(patch_relu_term_w)
+    # ------------------------------ Changed by Zhengxin -------------------------------
     
     return loss
 
-def validation_cvxproblem(model, testloader, u_vectors, beta, rho, device):
+# ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+#def validation_cvxproblem(model, testloader, u_vectors, beta, rho, device):
+def validation_cvxproblem(model, testloader, u_vectors, beta, rho, device, kernel_shape, stride_shape):
+# ------------------------------ Changed by Zhengxin -------------------------------
     test_loss = 0
     test_correct = 0
     test_noncvx_cost = 0
@@ -336,8 +394,21 @@ def validation_cvxproblem(model, testloader, u_vectors, beta, rho, device):
         for ix, (_x, _y) in enumerate(testloader):
             _x = Variable(_x).to(device)
             _y = Variable(_y).to(device)
-            _x = _x.view(_x.shape[0], -1)
-            _z = (torch.matmul(_x, torch.from_numpy(u_vectors).float().to(device)) >= 0)
+            # ++++++++++++++++++++++++++++++ Added by Zhengxin +++++++++++++++++++++++++++++++
+            _x = _x.unfold(1, kernel_shape[0], stride_shape[0])
+            _x = _x.unfold(2, kernel_shape[1], stride_shape[1])
+            _x = _x.unfold(3, kernel_shape[2], stride_shape[2]).contiguous()
+            batch_size = _x.shape[0]
+            d = np.prod(kernel_shape)
+            # ------------------------------ Added by Zhengxin -------------------------------
+            # ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+            #_x = _x.view(_x.shape[0], -1)
+            #_z = (torch.matmul(_x, torch.from_numpy(u_vectors).float().to(device)) >= 0)
+            _x = _x.view(-1, d) # [batch_size * number_patches, product(kernel_shape)]
+            _z = (torch.matmul(_x, torch.from_numpy(u_vectors).float().to(device)) >= 0) # [batch_size * number_patches, num_neurons]
+            _x = _x.view(batch_size, -1, d) # [n, number_patches, d]
+            _z = _z.view(batch_size, -1, _z.shape[1]) # [n, number_patches, P]
+            # ------------------------------ Changed by Zhengxin -------------------------------
 
             output = model.forward(_x, _z)
             yhat = model(_x, _z).float()
@@ -350,7 +421,10 @@ def validation_cvxproblem(model, testloader, u_vectors, beta, rho, device):
             test_noncvx_cost += get_nonconvex_cost(one_hot(_y).to(device), model, _x, beta, device)
 
     return test_loss, test_correct, test_noncvx_cost
-def sgd_solver_cvxproblem(ds, ds_test, num_epochs, num_neurons, beta, 
+# ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+#def sgd_solver_cvxproblem(ds, ds_test, num_epochs, num_neurons, beta, 
+def sgd_solver_cvxproblem(ds, ds_test, num_epochs, num_neurons, number_patches, beta, kernel_shape, stride_shape, 
+# ------------------------------ Changed by Zhengxin -------------------------------
                        learning_rate, batch_size, rho, u_vectors, 
                           solver_type, LBFGS_param, verbose=False,
                          n=60000, d=3072, num_classes=10, device='cpu'):
@@ -387,7 +461,10 @@ def sgd_solver_cvxproblem(ds, ds_test, num_epochs, num_neurons, beta,
                                                            eps=1e-12)
     
     model.eval()
-    losses_test[0], accs_test[0], noncvx_losses_test[0] = validation_cvxproblem(model, ds_test, u_vectors, beta, rho, device) # loss on the entire test set
+    # ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+    #losses_test[0], accs_test[0], noncvx_losses_test[0] = validation_cvxproblem(model, ds_test, u_vectors, beta, rho, device) # loss on the entire test set
+    losses_test[0], accs_test[0], noncvx_losses_test[0] = validation_cvxproblem(model, ds_test, u_vectors, beta, rho, device, kernel_shape, stride_shape) # loss on the entire test set
+    # ------------------------------ Changed by Zhengxin -------------------------------
     
     iter_no = 0
     print('starting training')
@@ -399,6 +476,10 @@ def sgd_solver_cvxproblem(ds, ds_test, num_epochs, num_neurons, beta,
             _y = Variable(_y).to(device)
             _z = Variable(_z).to(device)
             
+            # ++++++++++++++++++++++++++++++ Added by Zhengxin +++++++++++++++++++++++++++++++
+            _x = _x.view(-1, number_patches, d)
+            _z = _z.view(-1, number_patches, num_neurons)
+            # ------------------------------ Added by Zhengxin -------------------------------
             #========forward pass=====================================
             yhat = model(_x, _z).float()
             
@@ -418,12 +499,19 @@ def sgd_solver_cvxproblem(ds, ds_test, num_epochs, num_neurons, beta,
         
         model.eval()
         # get test loss and accuracy
-        losses_test[i+1], accs_test[i+1], noncvx_losses_test[i+1] = validation_cvxproblem(model, ds_test, u_vectors, beta, rho, device) # loss on the entire test set
+        # ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+        #losses_test[i+1], accs_test[i+1], noncvx_losses_test[i+1] = validation_cvxproblem(model, ds_test, u_vectors, beta, rho, device) # loss on the entire test set
+        losses_test[i+1], accs_test[i+1], noncvx_losses_test[i+1] = validation_cvxproblem(model, ds_test, u_vectors, beta, rho, device, kernel_shape, stride_shape) # loss on the entire test set
+        # ------------------------------ Changed by Zhengxin -------------------------------
         
         if i % 1 == 0:
             print("Epoch [{}/{}], TRAIN: noncvx/cvx loss: {}, {} acc: {}. TEST: noncvx/cvx loss: {}, {} acc: {}".format(i, num_epochs,
                     np.round(noncvx_losses[iter_no-1], 3), np.round(losses[iter_no-1], 3), np.round(accs[iter_no-1], 3), 
                     np.round(noncvx_losses_test[i+1], 3)/10000, np.round(losses_test[i+1], 3)/10000, np.round(accs_test[i+1]/10000, 3)))
+
+        # ++++++++++++++++++++++++++++++ Added by Zhengxin +++++++++++++++++++++++++++++++
+        sys.stdout.flush()
+        # ------------------------------ Added by Zhengxin -------------------------------
         
         scheduler.step(losses[iter_no-1])
         
@@ -467,13 +555,29 @@ for A, y in dummy_loader:
     pass
 Apatch=A.detach().clone()
 
-A = A.view(A.shape[0], -1)
-n,d=A.size()
+# ++++++++++++++++++++++++++++++ Added by Zhengxin +++++++++++++++++++++++++++++++
+kernel_shape = ARGS.K # kernel_shape[0] is the number of channel
+stride_shape = ARGS.S
+A = A.unfold(1, kernel_shape[0], stride_shape[0])
+A = A.unfold(2, kernel_shape[1], stride_shape[1])
+A = A.unfold(3, kernel_shape[2], stride_shape[2]).contiguous()
+# ------------------------------ Added by Zhengxin -------------------------------
+
+# ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+# A = A.view(A.shape[0], -1)
+A = A.view(A.shape[0], -1, np.prod(kernel_shape)) # [batch_size, number_patches, product(kernel_shape)]
+# n,d=A.size()
+n, number_patches, d=A.size() # n = batch_size, d = product(kernel_shape)
+A = A.view(-1, d)
+# ------------------------------ Changed by Zhengxin -------------------------------
 
 
 
 # problem parameters
-P, verbose = 4096, True # SET verbose to True to see progress
+# ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+# P, verbose = 4096, True # SET verbose to True to see progress
+P, verbose = 50, True # SET verbose to True to see progress
+# ------------------------------ Changed by Zhengxin -------------------------------
 GD_only=ARGS.GD[0]
 CVX_only=ARGS.CVX[0]
 beta = 1e-3 # regularization parameter
@@ -542,8 +646,20 @@ if GD_only ==0:
     print('Generating sign patterns')
     num_neurons,sign_pattern_list, u_vector_list = generate_sign_patterns(A, P, verbose)
     sign_patterns = np.array([sign_pattern_list[i].int().data.numpy() for i in range(num_neurons)])
-    u_vectors = np.asarray(u_vector_list).reshape((num_neurons, A.shape[1])).T
-    
+    # ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+    # u_vectors = np.asarray(u_vector_list).reshape((num_neurons, A.shape[1])).T
+    u_vectors = np.asarray(u_vector_list).reshape((num_neurons, d)).T # [d, num_neurons]
+    # ------------------------------ Changed by Zhengxin -------------------------------
+
+    # ++++++++++++++++++++++++++++++ Added by Zhengxin +++++++++++++++++++++++++++++++
+    # A: [n * number_patches, d] { n = batch_size, d = product(kernel_shape) }
+    A = A.view(n, -1) # [n, number_patches* d]
+    # sign_patterns: [num_neurons, n * number_patches]
+    sign_patterns = sign_patterns.reshape(-1, n, number_patches) # [num_neurons, n, number_patches]
+    sign_patterns = np.transpose(sign_patterns, (2, 0, 1)) # [number_patches, num_neurons, n]
+    sign_patterns = sign_patterns.reshape(-1, n) # [number_patches * num_neurons, n]
+    # ------------------------------ Added by Zhengxin -------------------------------
+
     ds_train = PrepareData3D(X=A, y=y, z=sign_patterns.T)
     ds_train = DataLoader(ds_train, batch_size=batch_size, shuffle=True)
     
@@ -555,225 +671,238 @@ if GD_only ==0:
     #  Convex1
     learning_rate = 1e-6 # 1e-6 for sgd    
     print('Convex Random1-mu={}'.format(learning_rate))
-    results_cvx1 = sgd_solver_cvxproblem(ds_train, test_loader, num_epochs2, num_neurons, beta, 
+    # ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+    # results_cvx1 = sgd_solver_cvxproblem(ds_train, test_loader, num_epochs2, num_neurons, beta, 
+    results_cvx1 = sgd_solver_cvxproblem(ds_train, test_loader, num_epochs2, num_neurons, number_patches, beta, kernel_shape, stride_shape, 
                             learning_rate, batch_size, rho, u_vectors, solver_type, LBFGS_param, verbose=True, 
-                                             n=n, device='cuda')
+                                             #n=n, device='cuda')
+                                             n=n, d=d, device='cuda')
+    # ------------------------------ Changed by Zhengxin -------------------------------
 
-    #  Convex2
-    learning_rate = 5e-7 # 1e-6 for sgd    
-    print('Convex Random2-mu={}'.format(learning_rate))
-    results_cvx2 = sgd_solver_cvxproblem(ds_train, test_loader, num_epochs2, num_neurons, beta, 
-                            learning_rate, batch_size, rho, u_vectors, solver_type, LBFGS_param, verbose=True, 
-                                             n=n, device='cuda')
+    # ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+    ## Comment All of The Rest
+    ##  Convex2
+    #learning_rate = 5e-7 # 1e-6 for sgd    
+    #print('Convex Random2-mu={}'.format(learning_rate))
+    #results_cvx2 = sgd_solver_cvxproblem(ds_train, test_loader, num_epochs2, num_neurons, beta, 
+    #                        learning_rate, batch_size, rho, u_vectors, solver_type, LBFGS_param, verbose=True, 
+    #                                         n=n, device='cuda')
+    # ------------------------------ Changed by Zhengxin -------------------------------
     
     
     
-    #  Convex with convolutional patterns
-    print('Generating conv sign patterns')
-    num_neurons,sign_pattern_list, u_vector_list = generate_conv_sign_patterns(Apatch, P, verbose)
-    sign_patterns = np.array([sign_pattern_list[i].int().data.numpy() for i in range(num_neurons)])
-    u_vectors = np.asarray(u_vector_list).reshape((num_neurons, A.shape[1])).T
+    # ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+    ## Comment All of The Rest
+    ##  Convex with convolutional patterns
+    #print('Generating conv sign patterns')
+    #num_neurons,sign_pattern_list, u_vector_list = generate_conv_sign_patterns(Apatch, P, verbose)
+    #sign_patterns = np.array([sign_pattern_list[i].int().data.numpy() for i in range(num_neurons)])
+    #u_vectors = np.asarray(u_vector_list).reshape((num_neurons, A.shape[1])).T
     
-    ds_train = PrepareData3D(X=A, y=y, z=sign_patterns.T)
-    ds_train = DataLoader(ds_train, batch_size=batch_size, shuffle=True)
+    #ds_train = PrepareData3D(X=A, y=y, z=sign_patterns.T)
+    #ds_train = DataLoader(ds_train, batch_size=batch_size, shuffle=True)
     
-    #  Convex Conv1
-    learning_rate = 1e-6       
-    print('Convex Conv1-mu={}'.format(learning_rate))
-    results_cvx_conv1 = sgd_solver_cvxproblem(ds_train, test_loader, num_epochs2, num_neurons, beta, 
-                            learning_rate, batch_size, rho, u_vectors, solver_type, LBFGS_param, verbose=True, 
-                                             n=n, device='cuda')
+    ##  Convex Conv1
+    #learning_rate = 1e-6       
+    #print('Convex Conv1-mu={}'.format(learning_rate))
+    #results_cvx_conv1 = sgd_solver_cvxproblem(ds_train, test_loader, num_epochs2, num_neurons, beta, 
+    #                        learning_rate, batch_size, rho, u_vectors, solver_type, LBFGS_param, verbose=True, 
+    #                                         n=n, device='cuda')
 
-    #  Convex Conv2 
-    learning_rate = 5e-7       
-    print('Convex Conv2-mu={}'.format(learning_rate))
-    results_cvx_conv2 = sgd_solver_cvxproblem(ds_train, test_loader, num_epochs2, num_neurons, beta, 
-                            learning_rate, batch_size, rho, u_vectors, solver_type, LBFGS_param, verbose=True, 
-                                             n=n, device='cuda')
+    ##  Convex Conv2 
+    #learning_rate = 5e-7       
+    #print('Convex Conv2-mu={}'.format(learning_rate))
+    #results_cvx_conv2 = sgd_solver_cvxproblem(ds_train, test_loader, num_epochs2, num_neurons, beta, 
+    #                        learning_rate, batch_size, rho, u_vectors, solver_type, LBFGS_param, verbose=True, 
+    #                                         n=n, device='cuda')
+    # ------------------------------ Changed by Zhengxin -------------------------------
     
     
-# plots and saves the results
-import pickle
-from datetime import datetime
-now = datetime.now() 
-if GD_only==1 and CVX_only==0:
-
-
-    
-    results_noncvx_sgd1v2=results_noncvx_sgd1[:5]
-    results_noncvx_sgd2v2=results_noncvx_sgd2[:5]
-    results_noncvx_sgd3v2=results_noncvx_sgd3[:5]
-
- 
-
-    
-    print('Saving the objects')
-    torch.save([num_epochs1,results_noncvx_sgd1v2, results_noncvx_sgd2v2, results_noncvx_sgd3v2
-                    ],'results_fig_gdonly_stepsize_cifar10_'+now.strftime("%d-%m-%Y_%H-%M-%S")+'.pt')
-    
-
-    
-elif GD_only==0 and CVX_only==1:
-
-    print('Saving the objects')
-    torch.save([num_epochs2, results_cvx1,results_cvx2, 
-                    results_cvx_conv1,results_cvx_conv2],'results_fig_cvxonly_stepsize_cifar10_'+now.strftime("%d-%m-%Y_%H-%M-%S")+'.pt')
-    
-else:
-
-    results_noncvx_sgd1v2=results_noncvx_sgd1[:5]
-    results_noncvx_sgd2v2=results_noncvx_sgd2[:5]
-    results_noncvx_sgd3v2=results_noncvx_sgd3[:5]
-    print('Saving the objects')
-    torch.save([num_epochs1,num_epochs2,results_noncvx_sgd1v2, results_noncvx_sgd2v2, results_noncvx_sgd3v2, results_cvx1,results_cvx2, 
-                    results_cvx_conv1,results_cvx_conv2],'results_fig_all_stepsize_cifar10_'+now.strftime("%d-%m-%Y_%H-%M-%S")+'.pt')
-
-    import matplotlib.pyplot as plt
-
-    skip=1#int(num_epochs1/num_epochs2)
-    mark_sgd=10
-    mark_cvx=30
-    
-    marker_size_sgd=10
-    marker_size_cvx=12
-    
-
-    plt.gcf().set_facecolor("white")
-    #fig,ax = plt.subplots()
-    
-    # plot
-    fsize=24
-    fsize_legend=15
-    
-    plt.rcParams.update({'font.size': 24})
-    plt.xlabel('Time(s)',fontsize=fsize);  plt.grid()
-    
-    plot_no = 1 # select --> 0: cost, 1: accuracy
-    
-    
-    
-    num_all_iters1 = results_noncvx_sgd1v2[4].shape[0] - 1
-    num_all_iters2 = results_cvx1[4].shape[0] - 1
-    
-    iters_per_epoch1 = num_all_iters1 // num_epochs1
-    iters_per_epoch2 = num_all_iters2 // num_epochs2
-    
-    epoch_times_noncvx1 = results_noncvx_sgd1v2[4][0:num_all_iters1+1:iters_per_epoch1]-results_noncvx_sgd1v2[4][0]
-    epoch_times_noncvx2 = results_noncvx_sgd2v2[4][0:num_all_iters1+1:iters_per_epoch1]-results_noncvx_sgd2v2[4][0]
-    epoch_times_noncvx3 = results_noncvx_sgd3v2[4][0:num_all_iters1+1:iters_per_epoch1]-results_noncvx_sgd3v2[4][0]
-    
-    
-    epoch_times_cvx1 = results_cvx1[4][0:num_all_iters2+1:iters_per_epoch2]-results_cvx1[4][0]
-    epoch_times_cvx2 = results_cvx2[4][0:num_all_iters2+1:iters_per_epoch2]-results_cvx2[4][0]
-    
-    epoch_times_cvx_conv1= results_cvx_conv1[4][0:num_all_iters2+1:iters_per_epoch2]-results_cvx_conv1[4][0]
-    epoch_times_cvx_conv2= results_cvx_conv2[4][0:num_all_iters2+1:iters_per_epoch2]-results_cvx_conv2[4][0]
-    
-    
-    plt.grid()
-    
-    # To plot results in the validation set
-    plt.plot( epoch_times_noncvx1[::skip],results_noncvx_sgd1v2[plot_no+2][::skip],'--', color='darkred', markevery=mark_sgd,linewidth=3.0, markersize=marker_size_sgd,label="SGD-$\mu=1e-2$")
-    plt.plot( epoch_times_noncvx2[::skip],results_noncvx_sgd2v2[plot_no+2][::skip],'--', color='red', markevery=mark_sgd,linewidth=3.0, markersize=marker_size_sgd,label="SGD-$\mu=5e-3$")
-    plt.plot( epoch_times_noncvx3[::skip],results_noncvx_sgd3v2[plot_no+2][::skip],'--', color='lightcoral', markevery=mark_sgd,linewidth=3.0, markersize=marker_size_sgd,label="SGD-$\mu=1e-3$")
-    
-    
-    plt.plot( epoch_times_cvx1,results_cvx1[plot_no+2],  'o--', color='g', markevery=mark_cvx,linewidth=3.0, markersize=marker_size_cvx,label="Convex-Random-$\mu=1e-6$")
-    plt.plot( epoch_times_cvx2,results_cvx2[plot_no+2],  'o--', color='lime', markevery=mark_cvx,linewidth=3.0, markersize=marker_size_cvx,label="Convex-Random-$\mu=5e-7$")
-    
-    plt.plot( epoch_times_cvx_conv1,results_cvx_conv1[plot_no+2],  'o--', color='b', markevery=mark_cvx,linewidth=3.0, markersize=marker_size_cvx,label="Convex-Conv-$\mu=1e-6$")
-    plt.plot( epoch_times_cvx_conv2,results_cvx_conv1[plot_no+2],  'o--', color='lightblue', markevery=mark_cvx,linewidth=3.0, markersize=marker_size_cvx,label="Convex-Conv-$\mu=5e-7$")
-    
-
-    plt.legend(prop={'size': fsize_legend})
-    plt.ylabel("Test Accuracy",fontsize=fsize)
-    plt.ylim(0.3, 0.6)
-    plt.xlim(0, 4500)
-    
-    plt.grid()
-    plt.savefig('cifar_multiclass_stepsize_testacc.png', format='png', bbox_inches='tight')
-    
-    
-    plt.figure()
-    # To plot training  acc
-    
-    plt.xlabel('Time(s)',fontsize=fsize)  
-    plt.grid()
-
-    p11=results_noncvx_sgd1v2[1].reshape(-1,1)
-    p12=results_noncvx_sgd2v2[1].reshape(-1,1)
-    p13=results_noncvx_sgd3v2[1].reshape(-1,1)
-    
-    p21=results_cvx1[1].reshape(-1,1)
-    p22=results_cvx2[1].reshape(-1,1)
-    
-    p31=results_cvx_conv1[1].reshape(-1,1)
-    p32=results_cvx_conv2[1].reshape(-1,1)
-    
-
-    
-    n=50000
-    batch_size1=1000
-    batch_size2=1000
-    
-    plt.plot(epoch_times_noncvx1[:-1][::skip],p11[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='darkred', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=1e-2$")
-    plt.plot(epoch_times_noncvx2[:-1][::skip],p12[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='red', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=5e-2$")
-    plt.plot(epoch_times_noncvx3[:-1][::skip],p13[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='lightcoral', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=1e-3$")
-    
-    plt.plot( epoch_times_cvx1[:-1],p21[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-',color='g', markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Random-$\mu=1e-6$")
-    plt.plot( epoch_times_cvx2[:-1],p22[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-',color='lime', markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Random-$\mu=5e-7$")
-    
-    plt.plot( epoch_times_cvx_conv1[:-1],p31[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-', color='b',markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Conv-$\mu=1e-6$")
-    plt.plot( epoch_times_cvx_conv2[:-1],p32[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-', color='lightblue',markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Conv-$\mu=5e-7$")
-    
-
-    plt.xlim(0, 4500)
-    
-    plt.ylabel("Training Accuracy",fontsize=fsize)
-    plt.grid()
-    matplotlib.pyplot.grid(True, which="both")
-    plt.savefig('cifar_multiclass_stepsize_tracc.png', format='png', bbox_inches='tight')
-
-    
-    # To plot training loss
-
-    plt.figure()
-    
-    plt.xlabel('Time(s)',fontsize=fsize)  
-    plt.grid()
-    p11=results_noncvx_sgd1v2[0].reshape(-1,1)
-    p12=results_noncvx_sgd2v2[0].reshape(-1,1)
-    p13=results_noncvx_sgd3v2[0].reshape(-1,1)
-    
-    p21=results_cvx1[5].reshape(-1,1)
-    p22=results_cvx2[5].reshape(-1,1)
-    
-    p31=results_cvx_conv1[5].reshape(-1,1)
-    p32=results_cvx_conv2[5].reshape(-1,1)
-    
-
-    
-    n=50000
-    batch_size1=1000
-    batch_size2=1000
-    
-    plt.semilogy(epoch_times_noncvx1[:-1][::skip],p11[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='darkred', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=1e-2$")
-    plt.semilogy(epoch_times_noncvx2[:-1][::skip],p12[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='red', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=5e-2$")
-    plt.semilogy(epoch_times_noncvx3[:-1][::skip],p13[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='lightcoral', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=1e-3$")
-    
-    plt.semilogy( epoch_times_cvx1[:-1],p21[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-',color='g', markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Random-$\mu=1e-6$")
-    plt.semilogy( epoch_times_cvx2[:-1],p22[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-',color='lime', markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Random-$\mu=5e-7$")
-    
-    plt.semilogy( epoch_times_cvx_conv1[:-1],p31[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-', color='b',markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Conv-$\mu=1e-6$")
-    plt.semilogy( epoch_times_cvx_conv2[:-1],p32[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-', color='lightblue',markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Conv-$\mu=5e-7$")
-    
-
-    plt.xlim(0, 4500)
-    
-    plt.ylabel("Objective Value",fontsize=fsize)
-    plt.grid()
-    matplotlib.pyplot.grid(True, which="both")
-    plt.savefig('cifar_multiclass_stepsize_obj.png', format='png', bbox_inches='tight')
+# ++++++++++++++++++++++++++++++ Changed by Zhengxin +++++++++++++++++++++++++++++++
+## Comment All of The Rest
+## plots and saves the results
+#import pickle
+#from datetime import datetime
+#now = datetime.now() 
+#if GD_only==1 and CVX_only==0:
+#
+#
+#    
+#    results_noncvx_sgd1v2=results_noncvx_sgd1[:5]
+#    results_noncvx_sgd2v2=results_noncvx_sgd2[:5]
+#    results_noncvx_sgd3v2=results_noncvx_sgd3[:5]
+#
+# 
+#
+#    
+#    print('Saving the objects')
+#    torch.save([num_epochs1,results_noncvx_sgd1v2, results_noncvx_sgd2v2, results_noncvx_sgd3v2
+#                    ],'results_fig_gdonly_stepsize_cifar10_'+now.strftime("%d-%m-%Y_%H-%M-%S")+'.pt')
+#    
+#
+#    
+#elif GD_only==0 and CVX_only==1:
+#
+#    print('Saving the objects')
+#    torch.save([num_epochs2, results_cvx1,results_cvx2, 
+#                    results_cvx_conv1,results_cvx_conv2],'results_fig_cvxonly_stepsize_cifar10_'+now.strftime("%d-%m-%Y_%H-%M-%S")+'.pt')
+#    
+#else:
+#
+#    results_noncvx_sgd1v2=results_noncvx_sgd1[:5]
+#    results_noncvx_sgd2v2=results_noncvx_sgd2[:5]
+#    results_noncvx_sgd3v2=results_noncvx_sgd3[:5]
+#    print('Saving the objects')
+#    torch.save([num_epochs1,num_epochs2,results_noncvx_sgd1v2, results_noncvx_sgd2v2, results_noncvx_sgd3v2, results_cvx1,results_cvx2, 
+#                    results_cvx_conv1,results_cvx_conv2],'results_fig_all_stepsize_cifar10_'+now.strftime("%d-%m-%Y_%H-%M-%S")+'.pt')
+#
+#    import matplotlib.pyplot as plt
+#
+#    skip=1#int(num_epochs1/num_epochs2)
+#    mark_sgd=10
+#    mark_cvx=30
+#    
+#    marker_size_sgd=10
+#    marker_size_cvx=12
+#    
+#
+#    plt.gcf().set_facecolor("white")
+#    #fig,ax = plt.subplots()
+#    
+#    # plot
+#    fsize=24
+#    fsize_legend=15
+#    
+#    plt.rcParams.update({'font.size': 24})
+#    plt.xlabel('Time(s)',fontsize=fsize);  plt.grid()
+#    
+#    plot_no = 1 # select --> 0: cost, 1: accuracy
+#    
+#    
+#    
+#    num_all_iters1 = results_noncvx_sgd1v2[4].shape[0] - 1
+#    num_all_iters2 = results_cvx1[4].shape[0] - 1
+#    
+#    iters_per_epoch1 = num_all_iters1 // num_epochs1
+#    iters_per_epoch2 = num_all_iters2 // num_epochs2
+#    
+#    epoch_times_noncvx1 = results_noncvx_sgd1v2[4][0:num_all_iters1+1:iters_per_epoch1]-results_noncvx_sgd1v2[4][0]
+#    epoch_times_noncvx2 = results_noncvx_sgd2v2[4][0:num_all_iters1+1:iters_per_epoch1]-results_noncvx_sgd2v2[4][0]
+#    epoch_times_noncvx3 = results_noncvx_sgd3v2[4][0:num_all_iters1+1:iters_per_epoch1]-results_noncvx_sgd3v2[4][0]
+#    
+#    
+#    epoch_times_cvx1 = results_cvx1[4][0:num_all_iters2+1:iters_per_epoch2]-results_cvx1[4][0]
+#    epoch_times_cvx2 = results_cvx2[4][0:num_all_iters2+1:iters_per_epoch2]-results_cvx2[4][0]
+#    
+#    epoch_times_cvx_conv1= results_cvx_conv1[4][0:num_all_iters2+1:iters_per_epoch2]-results_cvx_conv1[4][0]
+#    epoch_times_cvx_conv2= results_cvx_conv2[4][0:num_all_iters2+1:iters_per_epoch2]-results_cvx_conv2[4][0]
+#    
+#    
+#    plt.grid()
+#    
+#    # To plot results in the validation set
+#    plt.plot( epoch_times_noncvx1[::skip],results_noncvx_sgd1v2[plot_no+2][::skip],'--', color='darkred', markevery=mark_sgd,linewidth=3.0, markersize=marker_size_sgd,label="SGD-$\mu=1e-2$")
+#    plt.plot( epoch_times_noncvx2[::skip],results_noncvx_sgd2v2[plot_no+2][::skip],'--', color='red', markevery=mark_sgd,linewidth=3.0, markersize=marker_size_sgd,label="SGD-$\mu=5e-3$")
+#    plt.plot( epoch_times_noncvx3[::skip],results_noncvx_sgd3v2[plot_no+2][::skip],'--', color='lightcoral', markevery=mark_sgd,linewidth=3.0, markersize=marker_size_sgd,label="SGD-$\mu=1e-3$")
+#    
+#    
+#    plt.plot( epoch_times_cvx1,results_cvx1[plot_no+2],  'o--', color='g', markevery=mark_cvx,linewidth=3.0, markersize=marker_size_cvx,label="Convex-Random-$\mu=1e-6$")
+#    plt.plot( epoch_times_cvx2,results_cvx2[plot_no+2],  'o--', color='lime', markevery=mark_cvx,linewidth=3.0, markersize=marker_size_cvx,label="Convex-Random-$\mu=5e-7$")
+#    
+#    plt.plot( epoch_times_cvx_conv1,results_cvx_conv1[plot_no+2],  'o--', color='b', markevery=mark_cvx,linewidth=3.0, markersize=marker_size_cvx,label="Convex-Conv-$\mu=1e-6$")
+#    plt.plot( epoch_times_cvx_conv2,results_cvx_conv1[plot_no+2],  'o--', color='lightblue', markevery=mark_cvx,linewidth=3.0, markersize=marker_size_cvx,label="Convex-Conv-$\mu=5e-7$")
+#    
+#
+#    plt.legend(prop={'size': fsize_legend})
+#    plt.ylabel("Test Accuracy",fontsize=fsize)
+#    plt.ylim(0.3, 0.6)
+#    plt.xlim(0, 4500)
+#    
+#    plt.grid()
+#    plt.savefig('cifar_multiclass_stepsize_testacc.png', format='png', bbox_inches='tight')
+#    
+#    
+#    plt.figure()
+#    # To plot training  acc
+#    
+#    plt.xlabel('Time(s)',fontsize=fsize)  
+#    plt.grid()
+#
+#    p11=results_noncvx_sgd1v2[1].reshape(-1,1)
+#    p12=results_noncvx_sgd2v2[1].reshape(-1,1)
+#    p13=results_noncvx_sgd3v2[1].reshape(-1,1)
+#    
+#    p21=results_cvx1[1].reshape(-1,1)
+#    p22=results_cvx2[1].reshape(-1,1)
+#    
+#    p31=results_cvx_conv1[1].reshape(-1,1)
+#    p32=results_cvx_conv2[1].reshape(-1,1)
+#    
+#
+#    
+#    n=50000
+#    batch_size1=1000
+#    batch_size2=1000
+#    
+#    plt.plot(epoch_times_noncvx1[:-1][::skip],p11[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='darkred', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=1e-2$")
+#    plt.plot(epoch_times_noncvx2[:-1][::skip],p12[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='red', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=5e-2$")
+#    plt.plot(epoch_times_noncvx3[:-1][::skip],p13[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='lightcoral', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=1e-3$")
+#    
+#    plt.plot( epoch_times_cvx1[:-1],p21[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-',color='g', markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Random-$\mu=1e-6$")
+#    plt.plot( epoch_times_cvx2[:-1],p22[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-',color='lime', markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Random-$\mu=5e-7$")
+#    
+#    plt.plot( epoch_times_cvx_conv1[:-1],p31[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-', color='b',markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Conv-$\mu=1e-6$")
+#    plt.plot( epoch_times_cvx_conv2[:-1],p32[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-', color='lightblue',markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Conv-$\mu=5e-7$")
+#    
+#
+#    plt.xlim(0, 4500)
+#    
+#    plt.ylabel("Training Accuracy",fontsize=fsize)
+#    plt.grid()
+#    matplotlib.pyplot.grid(True, which="both")
+#    plt.savefig('cifar_multiclass_stepsize_tracc.png', format='png', bbox_inches='tight')
+#
+#    
+#    # To plot training loss
+#
+#    plt.figure()
+#    
+#    plt.xlabel('Time(s)',fontsize=fsize)  
+#    plt.grid()
+#    p11=results_noncvx_sgd1v2[0].reshape(-1,1)
+#    p12=results_noncvx_sgd2v2[0].reshape(-1,1)
+#    p13=results_noncvx_sgd3v2[0].reshape(-1,1)
+#    
+#    p21=results_cvx1[5].reshape(-1,1)
+#    p22=results_cvx2[5].reshape(-1,1)
+#    
+#    p31=results_cvx_conv1[5].reshape(-1,1)
+#    p32=results_cvx_conv2[5].reshape(-1,1)
+#    
+#
+#    
+#    n=50000
+#    batch_size1=1000
+#    batch_size2=1000
+#    
+#    plt.semilogy(epoch_times_noncvx1[:-1][::skip],p11[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='darkred', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=1e-2$")
+#    plt.semilogy(epoch_times_noncvx2[:-1][::skip],p12[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='red', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=5e-2$")
+#    plt.semilogy(epoch_times_noncvx3[:-1][::skip],p13[np.arange(num_epochs1)*int(n/batch_size1)][::skip],'-',color='lightcoral', markevery=mark_sgd,linewidth=3, markersize=marker_size_sgd,label="SGD-$\mu=1e-3$")
+#    
+#    plt.semilogy( epoch_times_cvx1[:-1],p21[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-',color='g', markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Random-$\mu=1e-6$")
+#    plt.semilogy( epoch_times_cvx2[:-1],p22[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-',color='lime', markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Random-$\mu=5e-7$")
+#    
+#    plt.semilogy( epoch_times_cvx_conv1[:-1],p31[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-', color='b',markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Conv-$\mu=1e-6$")
+#    plt.semilogy( epoch_times_cvx_conv2[:-1],p32[np.arange(num_epochs2)*int(n/batch_size2)] ,'o-', color='lightblue',markevery=mark_cvx,linewidth=3, markersize=marker_size_cvx,label="Convex-Conv-$\mu=5e-7$")
+#    
+#
+#    plt.xlim(0, 4500)
+#    
+#    plt.ylabel("Objective Value",fontsize=fsize)
+#    plt.grid()
+#    matplotlib.pyplot.grid(True, which="both")
+#    plt.savefig('cifar_multiclass_stepsize_obj.png', format='png', bbox_inches='tight')
+# ------------------------------ Changed by Zhengxin -------------------------------
 
 
 
